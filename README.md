@@ -39,7 +39,7 @@ The vest features:
 
 | Requirement | Version |
 |-------------|---------|
-| [Blender](https://www.blender.org/download/) | **3.6 LTS or 4.x** |
+| [Blender](https://www.blender.org/download/) | **3.6 LTS, 4.1, or 4.2+** |
 | Python (bundled with Blender) | 3.10 + |
 | Operating System | Windows 10/11, macOS 12+, Linux |
 

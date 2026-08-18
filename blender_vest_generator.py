@@ -7,7 +7,7 @@ mesh compatible with the Second Life Reborn body.
 Usage (run inside Blender's scripting workspace or via CLI):
     blender --background --python blender_vest_generator.py
 
-Blender 3.x / 4.x required.
+Blender 3.6 LTS, 4.1, or 4.2+ required.
 """
 
 import bpy
@@ -414,12 +414,18 @@ def join_objects(objects: list[bpy.types.Object],
 
 
 def export_dae(filepath: str):
-    """Export the entire scene as a Collada (.dae) file."""
+    """Export the entire scene as a Collada (.dae) file.
+
+    Handles parameter differences between Blender 3.x and 4.x automatically.
+    """
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    bpy.ops.wm.collada_export(
+
+    blender_major = bpy.app.version[0]
+
+    # Base kwargs supported by both 3.x and 4.x
+    kwargs = dict(
         filepath=filepath,
         apply_modifiers=True,
-        export_mesh_type_selection="view",
         selected=False,
         include_children=True,
         include_armatures=True,
@@ -429,6 +435,15 @@ def export_dae(filepath: str):
         export_global_forward_selection="Y",
         export_global_up_selection="Z",
     )
+
+    if blender_major >= 4:
+        # Blender 4.x renamed this parameter
+        kwargs["export_mesh_type"] = 0          # 0 = view (same as "view")
+    else:
+        # Blender 3.x name
+        kwargs["export_mesh_type_selection"] = "view"
+
+    bpy.ops.wm.collada_export(**kwargs)
     print(f"[vest_generator] Exported: {filepath}")
 
 
