@@ -25,9 +25,11 @@ PARAMS = {
     "vest_scale": 1.0,          # Uniform scale multiplier (Reborn = 1.0)
     "chest_width": 0.42,        # Half-width of chest (metres)
     "vest_length": 0.55,        # Front/back length from collar to hem
-    "shoulder_width": 0.44,     # Shoulder span
+    "shoulder_width": 0.44,     # Shoulder span (half, from centre)
     "armhole_depth": 0.18,      # Depth of the armhole cut
     "collar_height": 0.06,      # Height of the collar stand
+    "torso_depth": 0.18,        # Front-to-back half-depth of the torso
+    "front_gap": 0.015,         # Half-width of front opening (placket gap)
 
     # --- Material ---
     "leather_color": (0.02, 0.02, 0.02, 1.0),   # Near-black leather RGBA
@@ -94,33 +96,80 @@ def add_material(obj: bpy.types.Object, name: str,
 # VEST MESH GENERATION
 # ---------------------------------------------------------------------------
 
-def build_vest_profile(p: dict) -> list[tuple[float, float, float]]:
+def build_front_profile(p: dict) -> list[tuple[float, float, float]]:
     """
     Return an ordered list of (x, y, z) vertices for the *front* vest panel
-    outline (right half only – will be mirrored).
+    outline (right half only – will be mirrored for the left half).
+
+    The panel sits at Y=0 (front of body).  The side seam curves slightly
+    inward in Y to suggest the torso wrap without requiring a full cylinder.
 
     Coordinate system (Blender):
         +X  → right
-        +Y  → towards viewer (depth)
+        +Y  → towards viewer (depth / front)
         +Z  → up
     """
-    cw = p["chest_width"]
-    vl = p["vest_length"]
-    sw = p["shoulder_width"]
-    ad = p["armhole_depth"]
-    ch = p["collar_height"]
+    cw  = p["chest_width"]
+    vl  = p["vest_length"]
+    sw  = p["shoulder_width"]
+    ad  = p["armhole_depth"]
+    ch  = p["collar_height"]
+    gap = p["front_gap"]        # offset from centre so there's a front opening
 
-    # Starting at centre-bottom, going clockwise (right half)
+    # Side seam curves inward (negative Y) by half the torso depth at the
+    # bottom hem, tapering to 0 at the shoulder so the side seam blends.
+    side_y = -p["torso_depth"] * 0.5
+
     verts = [
-        (0.0,    0.0,  0.0),           # 0  centre hem
-        (cw,     0.0,  0.0),           # 1  side hem
-        (cw,     0.0,  vl - ad),       # 2  armhole bottom
-        (sw,     0.0,  vl - ad),       # 3  armhole outer
-        (sw,     0.0,  vl),            # 4  shoulder top
-        (cw * 0.25, 0.0, vl + ch),    # 5  collar outer
-        (0.0,    0.0,  vl + ch),       # 6  collar centre top
+        # Centre-front edge (vertical strip along the placket)
+        (gap,        0.0,     0.0),          # 0  centre hem
+        # Bottom hem, sweeping out to side seam
+        (cw,         side_y,  0.0),          # 1  side hem (curved in Y)
+        # Side seam rising to armhole
+        (cw,         side_y,  vl - ad),      # 2  armhole bottom (side)
+        # Armhole notch
+        (sw,         side_y * 0.3, vl - ad),# 3  armhole outer (eased toward front)
+        (sw,         0.0,     vl),           # 4  shoulder top
+        # Collar
+        (gap + cw * 0.20, 0.0, vl + ch),    # 5  collar outer
+        (gap,        0.0,     vl + ch),      # 6  collar centre top
     ]
     return verts
+
+
+def build_back_profile(p: dict) -> list[tuple[float, float, float]]:
+    """
+    Return an ordered list of (x, y, z) vertices for the *back* vest panel
+    outline (right half only – will be mirrored).
+
+    The back panel sits at Y = -(2 * torso_depth) so it is behind the front.
+    Side seam Y matches the front side seam so the two panels share edges.
+    """
+    cw  = p["chest_width"]
+    vl  = p["vest_length"]
+    sw  = p["shoulder_width"]
+    ad  = p["armhole_depth"]
+    ch  = p["collar_height"]
+    td  = p["torso_depth"]
+
+    back_y  = -td * 2.0      # rear face of back panel
+    side_y  = -td * 0.5      # shared side-seam Y with the front panel
+
+    verts = [
+        (0.0,  back_y,  0.0),           # 0  centre-back hem (no gap at back)
+        (cw,   side_y,  0.0),           # 1  side hem
+        (cw,   side_y,  vl - ad),       # 2  armhole bottom
+        (sw,   side_y * 0.3, vl - ad),  # 3  armhole outer
+        (sw,   back_y,  vl),            # 4  shoulder top
+        (cw * 0.20, back_y, vl + ch),   # 5  collar outer
+        (0.0,  back_y,  vl + ch),       # 6  collar centre top
+    ]
+    return verts
+
+
+# Keep old name as an alias so nothing else breaks
+def build_vest_profile(p: dict) -> list[tuple[float, float, float]]:
+    return build_front_profile(p)
 
 
 def extrude_panel(bm: bmesh.types.BMesh,
@@ -162,12 +211,18 @@ def extrude_panel(bm: bmesh.types.BMesh,
 
 
 def create_vest_panel(name: str, p: dict,
-                      mirror_x: bool = False) -> bpy.types.Object:
-    """Create a single half-panel mesh object."""
+                      mirror_x: bool = False,
+                      profile: list[tuple[float, float, float]] | None = None,
+                      ) -> bpy.types.Object:
+    """Create a single half-panel mesh object.
+
+    *profile* defaults to the front profile if not supplied.
+    """
     mesh = bpy.data.meshes.new(name)
     bm = bmesh.new()
 
-    profile = build_vest_profile(p)
+    if profile is None:
+        profile = build_front_profile(p)
     extrude_panel(bm, profile, thickness=0.004)
 
     bm.normal_update()
@@ -466,21 +521,19 @@ def build_vest(params: dict | None = None):
     col = new_collection("VestCollection")
 
     # --- Front panels (two halves mirrored at X=0) ---
-    front_right = create_vest_panel("FrontRight", p, mirror_x=False)
-    front_left  = create_vest_panel("FrontLeft",  p, mirror_x=True)
+    front_profile = build_front_profile(p)
+    front_right = create_vest_panel("FrontRight", p, mirror_x=False, profile=front_profile)
+    front_left  = create_vest_panel("FrontLeft",  p, mirror_x=True,  profile=front_profile)
 
-    # --- Back panel (same profile, rotated 180° around Y to face backward) ---
-    back_right = create_vest_panel("BackRight", p, mirror_x=False)
-    back_left  = create_vest_panel("BackLeft",  p, mirror_x=True)
-    # Rotate 180° around Y so the panels face the +Y direction (back of body)
-    # and offset them behind the front panels along Y.
-    for bp in (back_right, back_left):
-        bp.rotation_euler.y = math.radians(180)
-        bp.location.y = -p["chest_width"] * 2    # approximate torso depth
+    # --- Back panels (own profile already placed at the correct Y depth) ---
+    back_profile = build_back_profile(p)
+    back_right = create_vest_panel("BackRight", p, mirror_x=False, profile=back_profile)
+    back_left  = create_vest_panel("BackLeft",  p, mirror_x=True,  profile=back_profile)
 
     # --- Chest pockets ---
-    pocket_r = create_chest_pocket("PocketRight",  0.06, p["vest_length"] * 0.60)
-    pocket_l = create_chest_pocket("PocketLeft",  -0.12, p["vest_length"] * 0.60)
+    pocket_y = 0.005   # just proud of the front panel surface (Y≈0)
+    pocket_r = create_chest_pocket("PocketRight",  0.06,  p["vest_length"] * 0.60)
+    pocket_l = create_chest_pocket("PocketLeft",  -0.12,  p["vest_length"] * 0.60)
 
     # --- Buttons (5 down the front placket) ---
     buttons = []
